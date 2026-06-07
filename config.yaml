@@ -1,0 +1,108 @@
+# MGIDAN graph forecasting configuration
+
+project:
+  name: mgidan-graph-forecasting
+  seed: 42
+
+runtime:
+  device: cuda
+  gpu_ids: [0, 1]
+  multiprocessing_start_method: spawn
+
+paths:
+  data_csv: freshstores_size.csv
+  temporal_graph_pickle: data/temporal/temporal_graphs.pkl
+  temporal_graph_dir: data/temporal
+  results_dir: results
+  checkpoints_dir: checkpoints
+
+utils:
+  script:/model_utils.py
+  seed: 42
+  neg_inf: -1000000000.0
+  candidate_default_mode: full
+
+
+similarity_component:
+  script: /attention_graph.py
+  node_embedding:
+    sales_encoder: gru
+    sales_hidden_dim: 64
+    char_hidden_dim: 64
+    embed_dim: 32
+    dropout: 0.1
+  attention:
+    score: paper_query_key_concat
+    candidate_mode: full
+    edge_weight: alpha
+  graph_update:
+    aggregation: alpha_weighted_sum
+    graph_dim: 32
+
+fusion_component:
+  script: /multigraph_fusion.py
+  similarity_source: similarity_component.graph_embedding
+  temporal_source: temporal_graph_node_embeddings
+  attention:
+    query_source: similarity_graph_embedding
+    key_source: temporal_embedding
+    value_source: temporal_embedding
+    fusion_dim: 64
+    num_heads: 4
+    dropout: 0.1
+    use_residual: true
+    use_layer_norm: true
+  temporal_mask:
+    enabled: true
+    empty_row_policy: last
+
+irpe_attention:
+    script: /irpe_attention.py
+    score: q_dot_k_plus_pairwise_irpe
+    attn_dim: 64
+    num_heads: 4
+    max_interval: 30
+    dropout: 0.2
+
+
+forecasting:
+  script: /main_model.py
+  temporal_graph_path: ${paths.temporal_graph_pickle}
+  k_folds: 5
+  smooth_window: 1
+  validation:
+    scheme: rolling_time_series_k_fold
+    evaluated_folds: k
+    target: next_step_edge_feature_channel_0
+  edge_predictor:
+    architecture: dilation_causal_conv
+    edge_feature_dim: inferred_from_graph_edges
+    hidden_dim: 64
+    num_dilated_layers: 3
+    kernel_size: 3
+    dilation: 1
+    dilations: [1, 1, 1]
+    dropout: 0.2
+  optimization:
+    loss: mse
+    optimizer: adam
+    learning_rate: 0.001
+    weight_decay: 0.00001
+    num_epochs: 150
+    gradient_accumulation_steps: 4
+    scheduler:
+      type: reduce_lr_on_plateau
+      monitor: validation_mae
+      mode: min
+      factor: 0.5
+      patience: 10
+    early_stopping:
+      monitor: validation_mae
+      patience: 30
+      min_delta: 0.0
+  metrics:
+    - mae
+    - rmse
+    - r2
+    - wape
+    - rmsse
